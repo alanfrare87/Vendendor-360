@@ -343,7 +343,7 @@ function App() {
             </section>
           ) : (
             <section className="panel empty-state">
-              <div className="empty-icon">{section === 'Pedidos' ? <ShoppingCart /> : section === 'Clientes' ? <Users /> : section === 'Relatórios' ? <BarChart3 /> : <Settings />}</div>
+              <div className="empty-icon">{section === 'Pedidos' ? <ShoppingCart /> : section === 'Relatórios' ? <BarChart3 /> : <Settings />}</div>
               <h2>Módulo {section}</h2>
               <p>Esta área já está reservada na estrutura do Vendedor 360°. Vamos implementar suas funções na próxima etapa.</p>
               <button className="primary-button" onClick={() => setSection('Visão geral')}>Voltar ao painel</button>
