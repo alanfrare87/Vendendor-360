@@ -76,6 +76,8 @@ function App() {
   const [products, setProducts] = useState<Product[]>(readStoredProducts)
   const [clients, setClients] = useState<Client[]>([])
   const [clientSearch, setClientSearch] = useState('')
+  const [clientRole, setClientRole] = useState<'admin' | 'gv' | 'sv' | 'rv'>('admin')
+  const [assignedCode, setAssignedCode] = useState('')
   const [clientImportMessage, setClientImportMessage] = useState('')
   const [clientImportError, setClientImportError] = useState(false)
   const [isImportingClients, setIsImportingClients] = useState(false)
@@ -87,10 +89,20 @@ function App() {
   const fileInput = useRef<HTMLInputElement>(null)
 
   const filteredClients = useMemo(() => {
+    const scoped = clientRole === 'admin' ? clients : clients.filter(client => {
+      if (!assignedCode.trim()) return false
+      const value = assignedCode.trim()
+      if (clientRole === 'gv') return client.gv === value
+      if (clientRole === 'sv') return client.sv === value
+      return client.rv === value
+    })
     const term = clientSearch.trim().toLocaleLowerCase('pt-BR')
-    if (!term) return clients.slice(0, 100)
-    return clients.filter(client => [client.code, client.cnpj, client.legalName, client.tradeName, client.cep].some(value => value.toLocaleLowerCase('pt-BR').includes(term))).slice(0, 100)
-  }, [clients, clientSearch])
+    const searched = term ? scoped.filter(client =>
+      [client.code, client.cnpj, client.legalName, client.tradeName, client.cep]
+        .some(value => value.toLocaleLowerCase('pt-BR').includes(term))
+    ) : scoped
+    return searched.slice(0, 100)
+  }, [clients, clientSearch, clientRole, assignedCode])
 
   const handleClientImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -266,8 +278,13 @@ function App() {
                 <button className="primary-button import-button" onClick={() => clientFileInput.current?.click()} disabled={isImportingClients}><Upload size={16} /> {isImportingClients ? 'Importando...' : 'Importar Excel'}</button>
                 <input ref={clientFileInput} className="hidden-file" type="file" accept=".xlsx,.xls,.csv" onChange={handleClientImport} />
               </div>
+              <div className="client-access-panel">
+                <div><label htmlFor="client-role">Visualização de carteira</label><select id="client-role" value={clientRole} onChange={event => setClientRole(event.target.value as 'admin' | 'gv' | 'sv' | 'rv')}><option value="admin">Administrador — todos os clientes</option><option value="gv">Vendedor por código GV</option><option value="sv">Supervisor por código SV</option><option value="rv">Responsável por código RV</option></select></div>
+                {clientRole !== 'admin' && <div><label htmlFor="assigned-code">Código vinculado ao perfil</label><input id="assigned-code" value={assignedCode} onChange={event => setAssignedCode(event.target.value)} placeholder="Informe o código GV, SV ou RV" /></div>}
+                <small>Prévia de filtro para desenvolvimento. A restrição real de acesso será aplicada no banco de dados, após autenticação, e não dependerá deste seletor.</small>
+              </div>
               {clientImportMessage && <div className={'import-message ' + (clientImportError ? 'error' : 'success')}>{clientImportError ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}{clientImportMessage}</div>}
-              <div className="catalog-summary"><div><strong>{clients.length.toLocaleString('pt-BR')}</strong><span> clientes carregados</span></div><div><strong>{filteredClients.length.toLocaleString('pt-BR')}</strong><span> exibidos (máx. 100)</span></div></div>
+              <div className="catalog-summary"><div><strong>{(clientRole === 'admin' ? clients.length : clients.filter(client => clientRole === 'gv' ? client.gv === assignedCode.trim() : clientRole === 'sv' ? client.sv === assignedCode.trim() : client.rv === assignedCode.trim()).length).toLocaleString('pt-BR')}</strong><span> clientes na carteira</span></div><div><strong>{filteredClients.length.toLocaleString('pt-BR')}</strong><span> exibidos (máx. 100)</span></div></div>
               {clients.length === 0 ? <div className="panel catalog-empty"><div className="empty-icon"><Users /></div><h2>Importe sua carteira de clientes</h2><p>Carregue a planilha LISTA DE CLIENTES. A busca funciona por código, CNPJ, razão social, nome fantasia e CEP.</p><button className="primary-button" onClick={() => clientFileInput.current?.click()}><Upload size={16} /> Selecionar planilha</button><small>Por segurança, os registros permanecem apenas na memória desta sessão. A sincronização segura virá com autenticação e banco de dados privado.</small></div> : <div className="client-list">{filteredClients.length === 0 ? <div className="panel no-results">Nenhum cliente encontrado.</div> : filteredClients.map((client,index) => <article className="client-card" key={client.code + '-' + index}><div className="client-card-head"><strong>{client.tradeName || client.legalName || 'Cliente sem nome'}</strong><span>{client.code}</span></div><p>{client.legalName}</p><div className="client-meta"><span>CNPJ: {client.cnpj}</span><span>CEP: {client.cep || '—'}</span><span>Canal: {client.channel || '—'}</span><span>Cluster: {client.cluster || '—'}</span></div><small>{client.address}</small></article>)}</div>}
             </section>
           ) : section === 'Produtos' ? (
@@ -332,7 +349,7 @@ function App() {
               <button className="primary-button" onClick={() => setSection('Visão geral')}>Voltar ao painel</button>
             </section>
           )}
-          <footer>VENDEDOR 360° <span>•</span> Versão inicial 0.3.0</footer>
+          <footer>VENDEDOR 360° <span>•</span> Versão inicial 0.4.0</footer>
         </div>
       </main>
     </div>
