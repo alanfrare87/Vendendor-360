@@ -1,4 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Session } from '@supabase/supabase-js'
+import { isSupabaseConfigured, supabase } from './lib/supabase'
 import * as XLSX from 'xlsx'
 import {
   Activity, ArrowDownRight, ArrowUpRight, BarChart3, Boxes,
@@ -70,7 +72,7 @@ function readStoredProducts(): Product[] {
   }
 }
 
-function App() {
+function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [section, setSection] = useState<Section>('Visão geral')
   const [menuOpen, setMenuOpen] = useState(false)
   const [products, setProducts] = useState<Product[]>(readStoredProducts)
@@ -230,7 +232,7 @@ function App() {
         <header className="topbar">
           <button className="menu-button" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Menu /></button>
           <div className="breadcrumb">Vendedor 360° <span>/</span> {section}</div>
-          <div className="topbar-right"><span className="status-dot" /> Ambiente inicial</div>
+          <div className="topbar-right"><span className="status-dot" /> Conectado <button className="signout-button" onClick={onSignOut}>Sair</button></div>
         </header>
 
         <div className="content">
@@ -354,6 +356,84 @@ function App() {
       </main>
     </div>
   )
+}
+
+function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await onLogin(email.trim(), password)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível entrar. Confira seus dados.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="auth-screen">
+      <form className="auth-card" onSubmit={submit}>
+        <div className="auth-brand"><div className="brand-mark"><Boxes size={25} /></div><div><strong>VENDEDOR <span>360°</span></strong><small>GESTÃO COMERCIAL</small></div></div>
+        <p className="eyebrow">ACESSO SEGURO</p>
+        <h1>Entrar no Vendedor 360°</h1>
+        <p className="auth-description">Utilize o e-mail e a senha cadastrados pelo administrador.</p>
+        <label htmlFor="login-email">E-mail</label>
+        <input id="login-email" type="email" autoComplete="username" value={email} onChange={event => setEmail(event.target.value)} required placeholder="seu@email.com" />
+        <label htmlFor="login-password">Senha</label>
+        <input id="login-password" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} required placeholder="Sua senha" />
+        {error && <div className="auth-error"><AlertCircle size={17} />{error}</div>}
+        <button className="primary-button auth-submit" type="submit" disabled={busy}>{busy ? 'Entrando...' : 'Entrar'}</button>
+        <small className="auth-footnote">A criação de usuários é controlada pelo administrador.</small>
+      </form>
+    </main>
+  )
+}
+
+function App() {
+  const [session, setSession] = useState<Session | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [configError, setConfigError] = useState('')
+
+  useEffect(() => {
+    if (!supabase) {
+      setLoading(false)
+      return
+    }
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) setConfigError(error.message)
+      setSession(data.session)
+      setLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const login = async (email: string, password: string) => {
+    if (!supabase) throw new Error('A conexão com o Supabase não está configurada.')
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
+  }
+
+  const signOut = async () => {
+    if (supabase) await supabase.auth.signOut()
+  }
+
+  if (!isSupabaseConfigured || !supabase) {
+    return <main className="auth-screen"><section className="auth-card"><h1>Configuração pendente</h1><p>As variáveis do Supabase ainda não foram encontradas nesta publicação. Confira os Secrets do GitHub e execute novamente o workflow.</p></section></main>
+  }
+  if (loading) return <main className="auth-screen"><section className="auth-card">Conectando ao Vendedor 360°...</section></main>
+  if (configError) return <main className="auth-screen"><section className="auth-card"><h1>Falha na conexão</h1><p>{configError}</p><button className="primary-button" onClick={() => window.location.reload()}>Tentar novamente</button></section></main>
+  if (!session) return <LoginScreen onLogin={login} />
+  return <Dashboard key={session.user.id} session={session} onSignOut={signOut} />
 }
 
 export default App
