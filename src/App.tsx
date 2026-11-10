@@ -8,6 +8,12 @@ import {
 } from 'lucide-react'
 
 type Section = 'Visão geral' | 'Pedidos' | 'Clientes' | 'Produtos' | 'Relatórios' | 'Configurações'
+type Client = {
+  gv: string; sv: string; rv: string; activity: string; activityName: string;
+  cnpj: string; code: string; legalName: string; tradeName: string;
+  address: string; cep: string; storeChannel: string; channel: string;
+  cluster: string; eligibleEc: string; storePlatform: string;
+}
 type Product = {
   ean: string
   code: string
@@ -68,11 +74,62 @@ function App() {
   const [section, setSection] = useState<Section>('Visão geral')
   const [menuOpen, setMenuOpen] = useState(false)
   const [products, setProducts] = useState<Product[]>(readStoredProducts)
+  const [clients, setClients] = useState<Client[]>([])
+  const [clientSearch, setClientSearch] = useState('')
+  const [clientImportMessage, setClientImportMessage] = useState('')
+  const [clientImportError, setClientImportError] = useState(false)
+  const [isImportingClients, setIsImportingClients] = useState(false)
+  const clientFileInput = useRef<HTMLInputElement>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const [importMessage, setImportMessage] = useState('')
   const [importError, setImportError] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  const filteredClients = useMemo(() => {
+    const term = clientSearch.trim().toLocaleLowerCase('pt-BR')
+    if (!term) return clients.slice(0, 100)
+    return clients.filter(client => [client.code, client.cnpj, client.legalName, client.tradeName, client.cep].some(value => value.toLocaleLowerCase('pt-BR').includes(term))).slice(0, 100)
+  }, [clients, clientSearch])
+
+  const handleClientImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setIsImportingClients(true)
+    setClientImportMessage('')
+    setClientImportError(false)
+    try {
+      const buffer = await file.arrayBuffer()
+      const workbook = XLSX.read(buffer, { type: 'array', cellText: true, cellDates: false })
+      const sheet = workbook.Sheets[workbook.SheetNames[0]]
+      if (!sheet) throw new Error('A planilha não possui uma aba válida.')
+      const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
+      const imported: Client[] = rows.slice(1).flatMap(row => {
+        const v = row as unknown[]
+        const code = cellCode(v[6])
+        const cnpj = cellCode(v[5])
+        const legalName = cellCode(v[7])
+        if (!code && !cnpj && !legalName) return []
+        return [{
+          gv:cellCode(v[0]), sv:cellCode(v[1]), rv:cellCode(v[2]),
+          activity:cellCode(v[3]), activityName:cellCode(v[4]), cnpj, code,
+          legalName, tradeName:cellCode(v[8]), address:cellCode(v[9]), cep:cellCode(v[10]),
+          storeChannel:cellCode(v[11]), channel:cellCode(v[12]), cluster:cellCode(v[13]),
+          eligibleEc:cellCode(v[14]), storePlatform:cellCode(v[15])
+        }]
+      })
+      if (!imported.length) throw new Error('Não encontrei clientes. Confira os cabeçalhos da planilha.')
+      setClients(imported)
+      setClientSearch('')
+      setClientImportMessage(imported.length.toLocaleString('pt-BR') + ' clientes carregados nesta sessão. Por segurança, os dados não são gravados no GitHub nem salvos permanentemente neste navegador.')
+    } catch (error) {
+      setClientImportError(true)
+      setClientImportMessage(error instanceof Error ? error.message : 'Não foi possível ler a planilha.')
+    } finally {
+      setIsImportingClients(false)
+      event.target.value = ''
+    }
+  }
 
   const filteredProducts = useMemo(() => {
     const term = searchTerm.trim().toLocaleLowerCase('pt-BR')
@@ -202,6 +259,17 @@ function App() {
                 </article>
               </section>
             </>
+          ) : section === 'Clientes' ? (
+            <section className="catalog">
+              <div className="catalog-toolbar">
+                <div className="catalog-search"><Search size={18} /><input value={clientSearch} onChange={event => setClientSearch(event.target.value)} placeholder="Pesquisar por cliente, CNPJ, código ou CEP..." /></div>
+                <button className="primary-button import-button" onClick={() => clientFileInput.current?.click()} disabled={isImportingClients}><Upload size={16} /> {isImportingClients ? 'Importando...' : 'Importar Excel'}</button>
+                <input ref={clientFileInput} className="hidden-file" type="file" accept=".xlsx,.xls,.csv" onChange={handleClientImport} />
+              </div>
+              {clientImportMessage && <div className={'import-message ' + (clientImportError ? 'error' : 'success')}>{clientImportError ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}{clientImportMessage}</div>}
+              <div className="catalog-summary"><div><strong>{clients.length.toLocaleString('pt-BR')}</strong><span> clientes carregados</span></div><div><strong>{filteredClients.length.toLocaleString('pt-BR')}</strong><span> exibidos (máx. 100)</span></div></div>
+              {clients.length === 0 ? <div className="panel catalog-empty"><div className="empty-icon"><Users /></div><h2>Importe sua carteira de clientes</h2><p>Carregue a planilha LISTA DE CLIENTES. A busca funciona por código, CNPJ, razão social, nome fantasia e CEP.</p><button className="primary-button" onClick={() => clientFileInput.current?.click()}><Upload size={16} /> Selecionar planilha</button><small>Por segurança, os registros permanecem apenas na memória desta sessão. A sincronização segura virá com autenticação e banco de dados privado.</small></div> : <div className="client-list">{filteredClients.length === 0 ? <div className="panel no-results">Nenhum cliente encontrado.</div> : filteredClients.map((client,index) => <article className="client-card" key={client.code + '-' + index}><div className="client-card-head"><strong>{client.tradeName || client.legalName || 'Cliente sem nome'}</strong><span>{client.code}</span></div><p>{client.legalName}</p><div className="client-meta"><span>CNPJ: {client.cnpj}</span><span>CEP: {client.cep || '—'}</span><span>Canal: {client.channel || '—'}</span><span>Cluster: {client.cluster || '—'}</span></div><small>{client.address}</small></article>)}</div>}
+            </section>
           ) : section === 'Produtos' ? (
             <section className="catalog">
               <div className="catalog-toolbar">
@@ -264,7 +332,7 @@ function App() {
               <button className="primary-button" onClick={() => setSection('Visão geral')}>Voltar ao painel</button>
             </section>
           )}
-          <footer>VENDEDOR 360° <span>•</span> Versão inicial 0.2.0</footer>
+          <footer>VENDEDOR 360° <span>•</span> Versão inicial 0.3.0</footer>
         </div>
       </main>
     </div>
