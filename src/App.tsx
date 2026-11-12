@@ -63,23 +63,34 @@ const cellCode = (value: unknown): string => {
   return String(value).replace(/\.0$/, '').trim()
 }
 
-function readStoredProducts(): Product[] {
-  try {
-    const value = localStorage.getItem(STORAGE_KEY)
-    return value ? JSON.parse(value) as Product[] : []
-  } catch {
-    return []
-  }
+function toClient(row: any): Client {
+  return { gv:row.gv_code??'', sv:row.sv_code??'', rv:row.rv_code??'', activity:row.activity??'',
+    activityName:row.activity_name??'', cnpj:row.cnpj??'', code:row.client_code??'',
+    legalName:row.legal_name??'', tradeName:row.trade_name??'', address:row.address??'',
+    cep:row.cep??'', storeChannel:row.store_channel??'', channel:row.channel??'',
+    cluster:row.cluster??'', eligibleEc:row.eligible_ec==null?'':String(row.eligible_ec),
+    storePlatform:row.store_platform??'' }
 }
+function toProduct(row: any): Product {
+  return { ean:row.ean??'', code:row.product_code??'', description:row.description??'',
+    price7:cellNumber(row.price_7_days), price28:cellNumber(row.price_28_days),
+    dgManual:cellNumber(row.dg_manual), afterManual:cellNumber(row.price_after_manual),
+    ec:cellNumber(row.ec), afterEc:cellNumber(row.price_after_ec), pgPlus:cellNumber(row.pg_plus),
+    df:cellNumber(row.df), dg:cellNumber(row.dg), finalPrice:cellNumber(row.final_price) }
+}
+const chunks = <T,>(items:T[], size:number):T[][] =>
+  Array.from({length:Math.ceil(items.length/size)},(_,i)=>items.slice(i*size,(i+1)*size))
 
 function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
   const [section, setSection] = useState<Section>('Visão geral')
   const [menuOpen, setMenuOpen] = useState(false)
-  const [products, setProducts] = useState<Product[]>(readStoredProducts)
+  const [products, setProducts] = useState<Product[]>([])
   const [clients, setClients] = useState<Client[]>([])
   const [clientSearch, setClientSearch] = useState('')
-  const [clientRole, setClientRole] = useState<'admin' | 'gv' | 'sv' | 'rv'>('admin')
+  const [clientRole, setClientRole] = useState<'admin' | 'gv' | 'sv' | 'rv'>('rv')
   const [assignedCode, setAssignedCode] = useState('')
+  const [isLoadingData, setIsLoadingData] = useState(true)
+  const [dataLoadError, setDataLoadError] = useState('')
   const [clientImportMessage, setClientImportMessage] = useState('')
   const [clientImportError, setClientImportError] = useState(false)
   const [isImportingClients, setIsImportingClients] = useState(false)
@@ -91,20 +102,43 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
   const fileInput = useRef<HTMLInputElement>(null)
 
   const filteredClients = useMemo(() => {
-    const scoped = clientRole === 'admin' ? clients : clients.filter(client => {
-      if (!assignedCode.trim()) return false
-      const value = assignedCode.trim()
-      if (clientRole === 'gv') return client.gv === value
-      if (clientRole === 'sv') return client.sv === value
-      return client.rv === value
-    })
     const term = clientSearch.trim().toLocaleLowerCase('pt-BR')
-    const searched = term ? scoped.filter(client =>
+    const searched = term ? clients.filter(client =>
       [client.code, client.cnpj, client.legalName, client.tradeName, client.cep]
         .some(value => value.toLocaleLowerCase('pt-BR').includes(term))
-    ) : scoped
+    ) : clients
     return searched.slice(0, 100)
-  }, [clients, clientSearch, clientRole, assignedCode])
+  }, [clients, clientSearch])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadData = async () => {
+      if (!supabase) return
+      setIsLoadingData(true)
+      setDataLoadError('')
+      try {
+        const [pr, prod, cli] = await Promise.all([
+          supabase.from('profiles').select('role, assigned_code').eq('id', session.user.id).single(),
+          supabase.from('products').select('*').eq('active', true).order('description').limit(5000),
+          supabase.from('clients').select('*').order('legal_name').limit(5000),
+        ])
+        if (pr.error) throw pr.error
+        if (prod.error) throw prod.error
+        if (cli.error) throw cli.error
+        if (cancelled) return
+        if (['admin','gv','sv','rv'].includes(pr.data.role)) setClientRole(pr.data.role)
+        setAssignedCode(pr.data.assigned_code ?? '')
+        setProducts((prod.data ?? []).map(toProduct))
+        setClients((cli.data ?? []).map(toClient))
+      } catch (e) {
+        if (!cancelled) setDataLoadError(e instanceof Error ? e.message : 'Falha ao carregar dados do Supabase.')
+      } finally {
+        if (!cancelled) setIsLoadingData(false)
+      }
+    }
+    void loadData()
+    return () => { cancelled = true }
+  }, [session.user.id])
 
   const handleClientImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -133,9 +167,25 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         }]
       })
       if (!imported.length) throw new Error('Não encontrei clientes. Confira os cabeçalhos da planilha.')
-      setClients(imported)
+      if (!supabase) throw new Error('Conexão com o Supabase indisponível.')
+      const payload = imported.map(x => ({
+        client_code:x.code, gv_code:x.gv||null, sv_code:x.sv||null, rv_code:x.rv||null,
+        activity:x.activity||null, activity_name:x.activityName||null, cnpj:x.cnpj||null,
+        legal_name:x.legalName||null, trade_name:x.tradeName||null, address:x.address||null,
+        cep:x.cep||null, store_channel:x.storeChannel||null, channel:x.channel||null,
+        cluster:x.cluster||null,
+        eligible_ec:x.eligibleEc===''?null:['true','sim','1','yes'].includes(x.eligibleEc.toLowerCase()),
+        store_platform:x.storePlatform||null
+      }))
+      for (const batch of chunks(payload,500)) {
+        const {error}=await supabase.from('clients').upsert(batch,{onConflict:'client_code'})
+        if (error) throw error
+      }
+      const {data,error}=await supabase.from('clients').select('*').order('legal_name').limit(5000)
+      if (error) throw error
+      setClients((data??[]).map(toClient))
       setClientSearch('')
-      setClientImportMessage(imported.length.toLocaleString('pt-BR') + ' clientes carregados nesta sessão. Por segurança, os dados não são gravados no GitHub nem salvos permanentemente neste navegador.')
+      setClientImportMessage(imported.length.toLocaleString('pt-BR')+' clientes sincronizados com o Supabase.')
     } catch (error) {
       setClientImportError(true)
       setClientImportMessage(error instanceof Error ? error.message : 'Não foi possível ler a planilha.')
@@ -189,11 +239,23 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         }]
       })
       if (!imported.length) throw new Error('Não encontrei produtos. Confira se a primeira aba contém as colunas EAN, COD e DESCRIÇÃO.')
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(imported))
-      setProducts(imported)
+      if (!supabase) throw new Error('Conexão com o Supabase indisponível.')
+      const payload = imported.map(x => ({
+        product_code:x.code, ean:x.ean||null, description:x.description,
+        price_7_days:x.price7, price_28_days:x.price28, dg_manual:x.dgManual,
+        price_after_manual:x.afterManual, ec:x.ec, price_after_ec:x.afterEc,
+        pg_plus:x.pgPlus, df:x.df, dg:x.dg, final_price:x.finalPrice, active:true
+      }))
+      for (const batch of chunks(payload,500)) {
+        const {error}=await supabase.from('products').upsert(batch,{onConflict:'product_code'})
+        if (error) throw error
+      }
+      const {data,error}=await supabase.from('products').select('*').eq('active',true).order('description').limit(5000)
+      if (error) throw error
+      setProducts((data??[]).map(toProduct))
       setSearchTerm('')
       const missingEan = imported.filter(product => !product.ean).length
-      setImportMessage(`${imported.length} produtos importados. ${missingEan} sem EAN; os códigos internos foram preservados.`)
+      setImportMessage(imported.length.toLocaleString('pt-BR')+' produtos sincronizados com o Supabase. '+missingEan+' sem EAN; códigos internos preservados.')
     } catch (error) {
       setImportError(true)
       setImportMessage(error instanceof Error ? error.message : 'Não foi possível ler a planilha.')
@@ -269,25 +331,25 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
                   <button className="quick-link" onClick={() => setSection('Pedidos')}><span className="quick-icon"><FileText /></span><span><strong>Novo pedido</strong><small>Montar um pedido de venda</small></span><ChevronRight /></button>
                   <button className="quick-link" onClick={() => setSection('Clientes')}><span className="quick-icon"><Users /></span><span><strong>Clientes</strong><small>Consultar carteira de clientes</small></span><ChevronRight /></button>
                   <button className="quick-link" onClick={() => setSection('Produtos')}><span className="quick-icon"><Package /></span><span><strong>Produtos</strong><small>Consultar catálogo</small></span><ChevronRight /></button>
-                  <div className="notice"><Activity size={17} /><span>O catálogo fica salvo neste navegador. A sincronização entre vendedores será adicionada com o banco de dados.</span></div>
+                  <div className="notice"><Activity size={17} /><span>Clientes e produtos são carregados do Supabase, com acesso controlado pelo perfil.</span></div>
                 </article>
               </section>
             </>
           ) : section === 'Clientes' ? (
             <section className="catalog">
+              {dataLoadError && <div className="import-message error"><AlertCircle size={17} />{dataLoadError}</div>}
+              {isLoadingData && <div className="import-message">Carregando dados do Supabase...</div>}
               <div className="catalog-toolbar">
                 <div className="catalog-search"><Search size={18} /><input value={clientSearch} onChange={event => setClientSearch(event.target.value)} placeholder="Pesquisar por cliente, CNPJ, código ou CEP..." /></div>
                 <button className="primary-button import-button" onClick={() => clientFileInput.current?.click()} disabled={isImportingClients}><Upload size={16} /> {isImportingClients ? 'Importando...' : 'Importar Excel'}</button>
                 <input ref={clientFileInput} className="hidden-file" type="file" accept=".xlsx,.xls,.csv" onChange={handleClientImport} />
               </div>
               <div className="client-access-panel">
-                <div><label htmlFor="client-role">Visualização de carteira</label><select id="client-role" value={clientRole} onChange={event => setClientRole(event.target.value as 'admin' | 'gv' | 'sv' | 'rv')}><option value="admin">Administrador — todos os clientes</option><option value="gv">Vendedor por código GV</option><option value="sv">Supervisor por código SV</option><option value="rv">Responsável por código RV</option></select></div>
-                {clientRole !== 'admin' && <div><label htmlFor="assigned-code">Código vinculado ao perfil</label><input id="assigned-code" value={assignedCode} onChange={event => setAssignedCode(event.target.value)} placeholder="Informe o código GV, SV ou RV" /></div>}
-                <small>Prévia de filtro para desenvolvimento. A restrição real de acesso será aplicada no banco de dados, após autenticação, e não dependerá deste seletor.</small>
+                <small>Perfil: {clientRole.toUpperCase()}{assignedCode ? ' • código ' + assignedCode : ''}. O Supabase controla automaticamente sua carteira.</small>
               </div>
               {clientImportMessage && <div className={'import-message ' + (clientImportError ? 'error' : 'success')}>{clientImportError ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}{clientImportMessage}</div>}
               <div className="catalog-summary"><div><strong>{(clientRole === 'admin' ? clients.length : clients.filter(client => clientRole === 'gv' ? client.gv === assignedCode.trim() : clientRole === 'sv' ? client.sv === assignedCode.trim() : client.rv === assignedCode.trim()).length).toLocaleString('pt-BR')}</strong><span> clientes na carteira</span></div><div><strong>{filteredClients.length.toLocaleString('pt-BR')}</strong><span> exibidos (máx. 100)</span></div></div>
-              {clients.length === 0 ? <div className="panel catalog-empty"><div className="empty-icon"><Users /></div><h2>Importe sua carteira de clientes</h2><p>Carregue a planilha LISTA DE CLIENTES. A busca funciona por código, CNPJ, razão social, nome fantasia e CEP.</p><button className="primary-button" onClick={() => clientFileInput.current?.click()}><Upload size={16} /> Selecionar planilha</button><small>Por segurança, os registros permanecem apenas na memória desta sessão. A sincronização segura virá com autenticação e banco de dados privado.</small></div> : <div className="client-list">{filteredClients.length === 0 ? <div className="panel no-results">Nenhum cliente encontrado.</div> : filteredClients.map((client,index) => <article className="client-card" key={client.code + '-' + index}><div className="client-card-head"><strong>{client.tradeName || client.legalName || 'Cliente sem nome'}</strong><span>{client.code}</span></div><p>{client.legalName}</p><div className="client-meta"><span>CNPJ: {client.cnpj}</span><span>CEP: {client.cep || '—'}</span><span>Canal: {client.channel || '—'}</span><span>Cluster: {client.cluster || '—'}</span></div><small>{client.address}</small></article>)}</div>}
+              {isLoadingData ? null : clients.length === 0 ? <div className="panel catalog-empty"><div className="empty-icon"><Users /></div><h2>Importe sua carteira de clientes</h2><p>Carregue a planilha LISTA DE CLIENTES. A busca funciona por código, CNPJ, razão social, nome fantasia e CEP.</p><button className="primary-button" onClick={() => clientFileInput.current?.click()}><Upload size={16} /> Selecionar planilha</button><small>Os registros ficam armazenados no Supabase e respeitam as permissões do seu perfil.</small></div> : <div className="client-list">{filteredClients.length === 0 ? <div className="panel no-results">Nenhum cliente encontrado.</div> : filteredClients.map((client,index) => <article className="client-card" key={client.code + '-' + index}><div className="client-card-head"><strong>{client.tradeName || client.legalName || 'Cliente sem nome'}</strong><span>{client.code}</span></div><p>{client.legalName}</p><div className="client-meta"><span>CNPJ: {client.cnpj}</span><span>CEP: {client.cep || '—'}</span><span>Canal: {client.channel || '—'}</span><span>Cluster: {client.cluster || '—'}</span></div><small>{client.address}</small></article>)}</div>}
             </section>
           ) : section === 'Produtos' ? (
             <section className="catalog">
@@ -313,7 +375,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
                   <h2>Importe sua tabela de produtos</h2>
                   <p>Selecione a planilha Excel de preços. O sistema preserva preço de 7 e 28 dias, DG manual, EC, P&G+, descontos e preço final calculado.</p>
                   <button className="primary-button" onClick={() => fileInput.current?.click()}><Upload size={16} /> Selecionar planilha</button>
-                  <small>Os dados serão salvos neste navegador até a integração com o banco de dados.</small>
+                  <small>Os produtos importados são sincronizados com o catálogo compartilhado no Supabase.</small>
                 </div>
               ) : (
                 <div className="product-list">
