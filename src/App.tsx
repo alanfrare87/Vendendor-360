@@ -32,7 +32,6 @@ type Product = {
   finalPrice: number | null
 }
 
-const STORAGE_KEY = 'vendedor360-products-v1'
 const navigation: { label: Section; icon: typeof LayoutDashboard }[] = [
   { label: 'Visão geral', icon: LayoutDashboard },
   { label: 'Pedidos', icon: ClipboardList },
