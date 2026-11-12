@@ -102,11 +102,10 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
 
   const filteredClients = useMemo(() => {
     const term = clientSearch.trim().toLocaleLowerCase('pt-BR')
-    const searched = term ? clients.filter(client =>
+    return term ? clients.filter(client =>
       [client.code, client.cnpj, client.legalName, client.tradeName, client.cep]
         .some(value => value.toLocaleLowerCase('pt-BR').includes(term))
     ) : clients
-    return searched.slice(0, 100)
   }, [clients, clientSearch])
 
   useEffect(() => {
@@ -116,19 +115,24 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
       setIsLoadingData(true)
       setDataLoadError('')
       try {
-        const [pr, prod, cli] = await Promise.all([
+        const [pr, prod] = await Promise.all([
           supabase.from('profiles').select('role, assigned_code').eq('id', session.user.id).single(),
           supabase.from('products').select('*').eq('active', true).order('description').limit(5000),
-          supabase.from('clients').select('*').order('legal_name').limit(5000),
         ])
         if (pr.error) throw pr.error
         if (prod.error) throw prod.error
-        if (cli.error) throw cli.error
+        const allClients: any[] = []
+        for (let from = 0; ; from += 1000) {
+          const { data, error } = await supabase.from('clients').select('*').order('legal_name').range(from, from + 999)
+          if (error) throw error
+          allClients.push(...(data ?? []))
+          if (!data || data.length < 1000) break
+        }
         if (cancelled) return
-        if (['admin','gv','sv','rv'].includes(pr.data.role)) setClientRole(pr.data.role)
+        setClientRole(['admin','gv','sv','rv'].includes(pr.data.role) ? pr.data.role : 'rv')
         setAssignedCode(pr.data.assigned_code ?? '')
         setProducts((prod.data ?? []).map(toProduct))
-        setClients((cli.data ?? []).map(toClient))
+        setClients(allClients.map(toClient))
       } catch (e) {
         if (!cancelled) setDataLoadError(e instanceof Error ? e.message : 'Falha ao carregar dados do Supabase.')
       } finally {
@@ -180,9 +184,14 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         const {error}=await supabase.from('clients').upsert(batch,{onConflict:'client_code'})
         if (error) throw error
       }
-      const {data,error}=await supabase.from('clients').select('*').order('legal_name').limit(5000)
-      if (error) throw error
-      setClients((data??[]).map(toClient))
+      const allClients: any[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await supabase.from('clients').select('*').order('legal_name').range(from, from + 999)
+        if (error) throw error
+        allClients.push(...(data ?? []))
+        if (!data || data.length < 1000) break
+      }
+      setClients(allClients.map(toClient))
       setClientSearch('')
       setClientImportMessage(imported.length.toLocaleString('pt-BR')+' clientes sincronizados com o Supabase.')
     } catch (error) {
