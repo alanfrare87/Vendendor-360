@@ -312,11 +312,23 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
     ],
   }
   const availableInstallments = installmentOptions[orderTerm] ?? installmentOptions['7']
-  const orderBaseTotal = orderCart.reduce((sum,item) => sum + (item.product.finalPrice ?? 0) * item.quantity, 0)
-  const orderTotal = Math.round((orderBaseTotal * (1 + selectedPayment.rate) + Number.EPSILON) * 100) / 100
+  // Regra comercial: preço 7 dias -> acréscimo financeiro -> DG manual -> EC -> P&G+ + DF + DG.
+  const calculateOrderUnitPrice = (product: Product, financeRate: number) => {
+    if (product.price7 == null) return null
+    let value = product.price7 * (1 + financeRate)
+    if (product.dgManual != null) value *= (1 - product.dgManual)
+    if (product.ec != null) value *= (1 - product.ec)
+    const combinedDiscounts = (product.pgPlus ?? 0) + (product.df ?? 0) + (product.dg ?? 0)
+    value *= (1 - combinedDiscounts)
+    return Math.round((value + Number.EPSILON) * 100) / 100
+  }
+  const orderBaseTotal = orderCart.reduce((sum,item) => sum + (item.product.price7 ?? 0) * item.quantity, 0)
+  const orderFinancedTotal = orderCart.reduce((sum,item) => sum + (item.product.price7 ?? 0) * (1 + selectedPayment.rate) * item.quantity, 0)
+  const orderTotal = orderCart.reduce((sum,item) => sum + (calculateOrderUnitPrice(item.product, selectedPayment.rate) ?? 0) * item.quantity, 0)
+  const orderDiscountTotal = Math.round((orderFinancedTotal - orderTotal + Number.EPSILON) * 100) / 100
   const orderProductResults = products.filter(product => {
     const term = orderProductSearch.trim().toLocaleLowerCase('pt-BR')
-    return product.finalPrice != null && (!term || product.description.toLocaleLowerCase('pt-BR').includes(term) || product.code.toLowerCase().includes(term) || product.ean.includes(term))
+    return product.price7 != null && (!term || product.description.toLocaleLowerCase('pt-BR').includes(term) || product.code.toLowerCase().includes(term) || product.ean.includes(term))
   }).slice(0, 20)
   const addOrderProduct = (product: Product) => {
     setOrderCart(current => {
@@ -342,6 +354,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         created_by: session.user.id,
         status: 'draft',
         subtotal: orderBaseTotal,
+        discount_total: orderDiscountTotal,
         total: orderTotal,
         payment_term_days: Number(orderTerm),
         payment_term_label: selectedPayment.label,
@@ -350,7 +363,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
       }).select('id, order_number').single()
       if (orderErr) throw orderErr
       const items = orderCart.map(item => {
-        const unitPrice = Math.round(((item.product.finalPrice ?? 0) * (1 + selectedPayment.rate) + Number.EPSILON) * 100) / 100
+        const unitPrice = calculateOrderUnitPrice(item.product, selectedPayment.rate) ?? 0
         return {
           order_id: order.id,
           product_id: item.product.id,
@@ -523,18 +536,19 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
                   <div><label style={{display:'block',fontWeight:600}}>Prazo de pagamento</label><select value={orderTerm} onChange={e=>{setOrderTerm(e.target.value);const first=(installmentOptions[e.target.value]??installmentOptions['7'])[0];setOrderInstallments(first.label)}} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}>{paymentOptions.map(option=><option key={option.days} value={option.days}>{option.label} — acréscimo {percent(option.rate)}</option>)}</select></div>
                   <div><label style={{display:'block',fontWeight:600}}>Parcelamento / vencimentos</label><select value={orderInstallments} onChange={e=>setOrderInstallments(e.target.value)} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}>{availableInstallments.map(option=><option key={option.label} value={option.label}>{option.label}</option>)}</select></div>
                 </div>
-                <div className="notice" style={{marginTop:14}}><Activity size={17}/><span>O acréscimo financeiro é aplicado sobre o preço final do catálogo. A condição ficará gravada no pedido.</span></div>
+                <div className="notice" style={{marginTop:14}}><Activity size={17}/><span>Cálculo: preço 7 dias + acréscimo financeiro; depois DG manual, EC e soma de P&G+, DF e DG. A condição ficará gravada no pedido.</span></div>
                 <label style={{display:'block',fontWeight:600,marginTop:20}}>Buscar produtos</label>
                 <div className="catalog-search" style={{marginTop:6}}><Search size={18}/><input value={orderProductSearch} onChange={e=>setOrderProductSearch(e.target.value)} placeholder="Digite descrição, código ou EAN..."/></div>
                 <div style={{display:'grid',gap:8,marginTop:10}}>
-                  {orderProductResults.map(product=><div key={product.code} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:12,border:'1px solid #e3e9ed',borderRadius:10}}><div><strong>{product.description}</strong><small style={{display:'block',color:'#71808a'}}>Código: {product.code} • Base: {money(product.finalPrice)}</small></div><button type="button" className="primary-button" onClick={()=>addOrderProduct(product)}>Adicionar</button></div>)}
+                  {orderProductResults.map(product=><div key={product.code} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:12,border:'1px solid #e3e9ed',borderRadius:10}}><div><strong>{product.description}</strong><small style={{display:'block',color:'#71808a'}}>Código: {product.code} • Preço 7 dias: {money(product.price7)}</small></div><button type="button" className="primary-button" onClick={()=>addOrderProduct(product)}>Adicionar</button></div>)}
                   {orderProductResults.length===0 && <small>Nenhum produto com preço final válido encontrado.</small>}
                 </div>
                 <h3 style={{marginTop:22}}>Itens do pedido</h3>
-                {orderCart.length===0 ? <p className="subtitle">Ainda não há produtos adicionados.</p> : orderCart.map(item=><div key={item.product.code} style={{display:'grid',gridTemplateColumns:'1fr 90px auto auto',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid #e5eaee'}}><div><strong>{item.product.description}</strong><small style={{display:'block',color:'#71808a'}}>{money((item.product.finalPrice??0)*(1+selectedPayment.rate))} por unidade com prazo</small></div><input aria-label={'Quantidade '+item.product.description} type="number" min="1" step="1" value={item.quantity} onChange={e=>setOrderCart(current=>current.map(row=>row.product.code===item.product.code?{...row,quantity:Math.max(1,Number(e.target.value)||1)}:row))} style={{width:'100%',padding:8,border:'1px solid #d5dde3',borderRadius:8}}/><strong>{money((item.product.finalPrice??0)*(1+selectedPayment.rate)*item.quantity)}</strong><button type="button" className="signout-button" onClick={()=>setOrderCart(current=>current.filter(row=>row.product.code!==item.product.code))}>Remover</button></div>)}
+                {orderCart.length===0 ? <p className="subtitle">Ainda não há produtos adicionados.</p> : orderCart.map(item=><div key={item.product.code} style={{display:'grid',gridTemplateColumns:'1fr 90px auto auto',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid #e5eaee'}}><div><strong>{item.product.description}</strong><small style={{display:'block',color:'#71808a'}}>{money(calculateOrderUnitPrice(item.product, selectedPayment.rate))} por unidade com prazo</small></div><input aria-label={'Quantidade '+item.product.description} type="number" min="1" step="1" value={item.quantity} onChange={e=>setOrderCart(current=>current.map(row=>row.product.code===item.product.code?{...row,quantity:Math.max(1,Number(e.target.value)||1)}:row))} style={{width:'100%',padding:8,border:'1px solid #d5dde3',borderRadius:8}}/><strong>{money((calculateOrderUnitPrice(item.product, selectedPayment.rate)??0)*item.quantity)}</strong><button type="button" className="signout-button" onClick={()=>setOrderCart(current=>current.filter(row=>row.product.code!==item.product.code))}>Remover</button></div>)}
                 <div style={{marginTop:20,padding:16,background:'#eef8f5',borderRadius:12}}>
-                  <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal do catálogo</span><strong>{money(orderBaseTotal)}</strong></div>
-                  <div style={{display:'flex',justifyContent:'space-between',marginTop:8}}><span>Acréscimo financeiro ({percent(selectedPayment.rate)})</span><strong>{money(orderTotal-orderBaseTotal)}</strong></div>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal — preço 7 dias</span><strong>{money(orderBaseTotal)}</strong></div>
+                  <div style={{display:'flex',justifyContent:'space-between',marginTop:8}}><span>Após acréscimo financeiro ({percent(selectedPayment.rate)})</span><strong>{money(orderFinancedTotal)}</strong></div>
+                  <div style={{display:'flex',justifyContent:'space-between',marginTop:8}}><span>Descontos comerciais</span><strong>− {money(orderDiscountTotal)}</strong></div>
                   <div style={{display:'flex',justifyContent:'space-between',marginTop:12,fontSize:20}}><strong>Total do pedido</strong><strong>{money(orderTotal)}</strong></div>
                 </div>
                 {orderMessage && <div className={'import-message '+(orderError?'error':'success')} style={{marginTop:14}}>{orderMessage}</div>}
