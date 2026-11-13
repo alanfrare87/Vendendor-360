@@ -11,12 +11,13 @@ import {
 
 type Section = 'Visão geral' | 'Pedidos' | 'Clientes' | 'Produtos' | 'Relatórios' | 'Configurações'
 type Client = {
-  gv: string; sv: string; rv: string; activity: string; activityName: string;
+  id: string; gv: string; sv: string; rv: string; activity: string; activityName: string;
   cnpj: string; code: string; legalName: string; tradeName: string;
   address: string; cep: string; storeChannel: string; channel: string;
   cluster: string; eligibleEc: string; storePlatform: string;
 }
 type Product = {
+  id: string
   ean: string
   code: string
   description: string
@@ -66,7 +67,7 @@ const cellCode = (value: unknown): string => {
 }
 
 function toClient(row: any): Client {
-  return { gv:row.gv_code??'', sv:row.sv_code??'', rv:row.rv_code??'', activity:row.activity??'',
+  return { id:row.id, gv:row.gv_code??'', sv:row.sv_code??'', rv:row.rv_code??'', activity:row.activity??'',
     activityName:row.activity_name??'', cnpj:row.cnpj??'', code:row.client_code??'',
     legalName:row.legal_name??'', tradeName:row.trade_name??'', address:row.address??'',
     cep:row.cep??'', storeChannel:row.store_channel??'', channel:row.channel??'',
@@ -74,7 +75,7 @@ function toClient(row: any): Client {
     storePlatform:row.store_platform??'' }
 }
 function toProduct(row: any): Product {
-  return { ean:row.ean??'', code:row.product_code??'', description:row.description??'',
+  return { id:row.id, ean:row.ean??'', code:row.product_code??'', description:row.description??'',
     price7:cellNumber(row.price_7_days), price28:cellNumber(row.price_28_days),
     dgManual:cellNumber(row.dg_manual), afterManual:cellNumber(row.price_after_manual),
     ec:cellNumber(row.ec), afterEc:cellNumber(row.price_after_ec), pgPlus:cellNumber(row.pg_plus),
@@ -113,6 +114,14 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
   const [editError, setEditError] = useState(false)
   const [isSavingProduct, setIsSavingProduct] = useState(false)
   const [priceHistory, setPriceHistory] = useState<any[]>([])
+  const [orderClientId, setOrderClientId] = useState('')
+  const [orderTerm, setOrderTerm] = useState('7')
+  const [orderInstallments, setOrderInstallments] = useState('7')
+  const [orderProductSearch, setOrderProductSearch] = useState('')
+  const [orderCart, setOrderCart] = useState<{product: Product; quantity: number}[]>([])
+  const [orderMessage, setOrderMessage] = useState('')
+  const [orderError, setOrderError] = useState(false)
+  const [isSavingOrder, setIsSavingOrder] = useState(false)
   const canManageCatalog = clientRole === 'admin'
 
   const filteredClients = useMemo(() => {
@@ -280,6 +289,96 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
     }
   }
 
+  const paymentOptions = [
+    { days: '0', label: 'Antecipado', rate: 0 },
+    { days: '7', label: '7 dias', rate: 0 },
+    { days: '14', label: '14 dias', rate: 0.007 },
+    { days: '21', label: '21 dias', rate: 0.014 },
+    { days: '28', label: '28 dias', rate: 0.021 },
+  ]
+  const selectedPayment = paymentOptions.find(option => option.days === orderTerm) ?? paymentOptions[1]
+  const installmentOptions: Record<string, {label:string; days:number[]}[]> = {
+    '0': [{label:'À vista / antecipado', days:[0]}],
+    '7': [{label:'7 dias', days:[7]}],
+    '14': [{label:'07 / 14 / 21 dias', days:[7,14,21]}],
+    '21': [
+      {label:'14 / 21 / 28 dias', days:[14,21,28]},
+      {label:'14 / 28 dias', days:[14,28]},
+    ],
+    '28': [
+      {label:'14 / 21 / 28 / 35 / 42 dias', days:[14,21,28,35,42]},
+      {label:'21 / 35 dias', days:[21,35]},
+      {label:'21 / 28 / 35 dias', days:[21,28,35]},
+    ],
+  }
+  const availableInstallments = installmentOptions[orderTerm] ?? installmentOptions['7']
+  const orderBaseTotal = orderCart.reduce((sum,item) => sum + (item.product.finalPrice ?? 0) * item.quantity, 0)
+  const orderTotal = Math.round((orderBaseTotal * (1 + selectedPayment.rate) + Number.EPSILON) * 100) / 100
+  const orderProductResults = products.filter(product => {
+    const term = orderProductSearch.trim().toLocaleLowerCase('pt-BR')
+    return product.finalPrice != null && (!term || product.description.toLocaleLowerCase('pt-BR').includes(term) || product.code.toLowerCase().includes(term) || product.ean.includes(term))
+  }).slice(0, 20)
+  const addOrderProduct = (product: Product) => {
+    setOrderCart(current => {
+      const existing = current.find(item => item.product.code === product.code)
+      return existing
+        ? current.map(item => item.product.code === product.code ? {...item, quantity:item.quantity+1} : item)
+        : [...current, {product, quantity:1}]
+    })
+  }
+  const saveOrder = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!supabase || !orderClientId || orderCart.length === 0) {
+      setOrderError(true)
+      setOrderMessage('Selecione um cliente e adicione pelo menos um produto.')
+      return
+    }
+    setIsSavingOrder(true)
+    setOrderError(false)
+    setOrderMessage('')
+    try {
+      const {data: order, error: orderErr} = await supabase.from('orders').insert({
+        client_id: orderClientId,
+        created_by: session.user.id,
+        status: 'draft',
+        subtotal: orderBaseTotal,
+        total: orderTotal,
+        payment_term_days: Number(orderTerm),
+        payment_term_label: selectedPayment.label,
+        finance_rate: selectedPayment.rate,
+        installment_days: (availableInstallments.find(option => option.label === orderInstallments) ?? availableInstallments[0]).days,
+      }).select('id, order_number').single()
+      if (orderErr) throw orderErr
+      const items = orderCart.map(item => {
+        const unitPrice = Math.round(((item.product.finalPrice ?? 0) * (1 + selectedPayment.rate) + Number.EPSILON) * 100) / 100
+        return {
+          order_id: order.id,
+          product_id: item.product.id,
+          product_code: item.product.code,
+          ean: item.product.ean || null,
+          description: item.product.description,
+          quantity: item.quantity,
+          unit_price: unitPrice,
+          discount: 0,
+        }
+      })
+      const {error: itemsErr} = await supabase.from('order_items').insert(items)
+      if (itemsErr) throw itemsErr
+      setOrderMessage('Pedido #' + order.order_number + ' salvo como rascunho. Total: ' + money(orderTotal))
+      setOrderError(false)
+      setOrderCart([])
+      setOrderClientId('')
+      setOrderTerm('7')
+      setOrderInstallments('7')
+      setOrderProductSearch('')
+    } catch (error) {
+      setOrderError(true)
+      setOrderMessage(error instanceof Error ? error.message : 'Não foi possível salvar o pedido.')
+    } finally {
+      setIsSavingOrder(false)
+    }
+  }
+
   const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -410,6 +509,38 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
                 </article>
               </section>
             </>
+          ) : section === 'Pedidos' ? (
+            <section className="catalog">
+              <form className="panel" onSubmit={saveOrder} style={{padding:22}}>
+                <p className="eyebrow">NOVO PEDIDO</p>
+                <h2 style={{marginTop:4}}>Montar pedido de venda</h2>
+                <label style={{display:'block',fontWeight:600,marginTop:16}}>Cliente</label>
+                <select value={orderClientId} onChange={e=>setOrderClientId(e.target.value)} required style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}>
+                  <option value="">Selecione um cliente da sua carteira</option>
+                  {clients.map(client=><option key={client.id} value={client.id}>{client.tradeName || client.legalName || 'Cliente'} — {client.code}</option>)}
+                </select>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14,marginTop:16}}>
+                  <div><label style={{display:'block',fontWeight:600}}>Prazo de pagamento</label><select value={orderTerm} onChange={e=>{setOrderTerm(e.target.value);const first=(installmentOptions[e.target.value]??installmentOptions['7'])[0];setOrderInstallments(first.label)}} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}>{paymentOptions.map(option=><option key={option.days} value={option.days}>{option.label} — acréscimo {percent(option.rate)}</option>)}</select></div>
+                  <div><label style={{display:'block',fontWeight:600}}>Parcelamento / vencimentos</label><select value={orderInstallments} onChange={e=>setOrderInstallments(e.target.value)} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}>{availableInstallments.map(option=><option key={option.label} value={option.label}>{option.label}</option>)}</select></div>
+                </div>
+                <div className="notice" style={{marginTop:14}}><Activity size={17}/><span>O acréscimo financeiro é aplicado sobre o preço final do catálogo. A condição ficará gravada no pedido.</span></div>
+                <label style={{display:'block',fontWeight:600,marginTop:20}}>Buscar produtos</label>
+                <div className="catalog-search" style={{marginTop:6}}><Search size={18}/><input value={orderProductSearch} onChange={e=>setOrderProductSearch(e.target.value)} placeholder="Digite descrição, código ou EAN..."/></div>
+                <div style={{display:'grid',gap:8,marginTop:10}}>
+                  {orderProductResults.map(product=><div key={product.code} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:12,border:'1px solid #e3e9ed',borderRadius:10}}><div><strong>{product.description}</strong><small style={{display:'block',color:'#71808a'}}>Código: {product.code} • Base: {money(product.finalPrice)}</small></div><button type="button" className="primary-button" onClick={()=>addOrderProduct(product)}>Adicionar</button></div>)}
+                  {orderProductResults.length===0 && <small>Nenhum produto com preço final válido encontrado.</small>}
+                </div>
+                <h3 style={{marginTop:22}}>Itens do pedido</h3>
+                {orderCart.length===0 ? <p className="subtitle">Ainda não há produtos adicionados.</p> : orderCart.map(item=><div key={item.product.code} style={{display:'grid',gridTemplateColumns:'1fr 90px auto auto',alignItems:'center',gap:10,padding:'10px 0',borderBottom:'1px solid #e5eaee'}}><div><strong>{item.product.description}</strong><small style={{display:'block',color:'#71808a'}}>{money((item.product.finalPrice??0)*(1+selectedPayment.rate))} por unidade com prazo</small></div><input aria-label={'Quantidade '+item.product.description} type="number" min="1" step="1" value={item.quantity} onChange={e=>setOrderCart(current=>current.map(row=>row.product.code===item.product.code?{...row,quantity:Math.max(1,Number(e.target.value)||1)}:row))} style={{width:'100%',padding:8,border:'1px solid #d5dde3',borderRadius:8}}/><strong>{money((item.product.finalPrice??0)*(1+selectedPayment.rate)*item.quantity)}</strong><button type="button" className="signout-button" onClick={()=>setOrderCart(current=>current.filter(row=>row.product.code!==item.product.code))}>Remover</button></div>)}
+                <div style={{marginTop:20,padding:16,background:'#eef8f5',borderRadius:12}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal do catálogo</span><strong>{money(orderBaseTotal)}</strong></div>
+                  <div style={{display:'flex',justifyContent:'space-between',marginTop:8}}><span>Acréscimo financeiro ({percent(selectedPayment.rate)})</span><strong>{money(orderTotal-orderBaseTotal)}</strong></div>
+                  <div style={{display:'flex',justifyContent:'space-between',marginTop:12,fontSize:20}}><strong>Total do pedido</strong><strong>{money(orderTotal)}</strong></div>
+                </div>
+                {orderMessage && <div className={'import-message '+(orderError?'error':'success')} style={{marginTop:14}}>{orderMessage}</div>}
+                <button className="primary-button" type="submit" disabled={isSavingOrder || !orderCart.length} style={{width:'100%',marginTop:16}}>{isSavingOrder?'Salvando pedido...':'Salvar pedido como rascunho'}</button>
+              </form>
+            </section>
           ) : section === 'Clientes' ? (
             <section className="catalog">
               {dataLoadError && <div className="import-message error"><AlertCircle size={17} />{dataLoadError}</div>}
