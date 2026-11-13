@@ -123,7 +123,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         if (prod.error) throw prod.error
         const allClients: any[] = []
         for (let from = 0; ; from += 1000) {
-          const { data, error } = await supabase.from('clients').select('*').order('legal_name').range(from, from + 999)
+          const { data, error } = await supabase.from('clients').select('*').eq('selected_for_sales', true).order('legal_name').range(from, from + 999)
           if (error) throw error
           allClients.push(...(data ?? []))
           if (!data || data.length < 1000) break
