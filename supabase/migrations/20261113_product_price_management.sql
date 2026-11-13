@@ -77,11 +77,11 @@ create or replace function public.touch_product_updated_at()
 returns trigger
 language plpgsql
 set search_path = ''
-as $
+as $$
 begin
   new.updated_at := now();
   return new;
-end;
+$$;
 $;
 
 drop trigger if exists products_touch_updated_at on public.products;
