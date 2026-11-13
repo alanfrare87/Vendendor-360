@@ -30,6 +30,9 @@ type Product = {
   df: number | null
   dg: number | null
   finalPrice: number | null
+  validFrom?: string | null
+  validUntil?: string | null
+  pricingMode?: 'automatic' | 'manual'
 }
 
 const navigation: { label: Section; icon: typeof LayoutDashboard }[] = [
@@ -75,7 +78,9 @@ function toProduct(row: any): Product {
     price7:cellNumber(row.price_7_days), price28:cellNumber(row.price_28_days),
     dgManual:cellNumber(row.dg_manual), afterManual:cellNumber(row.price_after_manual),
     ec:cellNumber(row.ec), afterEc:cellNumber(row.price_after_ec), pgPlus:cellNumber(row.pg_plus),
-    df:cellNumber(row.df), dg:cellNumber(row.dg), finalPrice:cellNumber(row.final_price) }
+    df:cellNumber(row.df), dg:cellNumber(row.dg), finalPrice:cellNumber(row.final_price),
+    validFrom:row.valid_from??null, validUntil:row.valid_until??null,
+    pricingMode:row.pricing_mode==='automatic'?'automatic':'manual' }
 }
 const chunks = <T,>(items:T[], size:number):T[][] =>
   Array.from({length:Math.ceil(items.length/size)},(_,i)=>items.slice(i*size,(i+1)*size))
@@ -99,6 +104,16 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
   const [importError, setImportError] = useState(false)
   const [isImporting, setIsImporting] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null)
+  const [editFinalPrice, setEditFinalPrice] = useState('')
+  const [editValidFrom, setEditValidFrom] = useState('')
+  const [editValidUntil, setEditValidUntil] = useState('')
+  const [editPricingMode, setEditPricingMode] = useState<'automatic' | 'manual'>('manual')
+  const [editMessage, setEditMessage] = useState('')
+  const [editError, setEditError] = useState(false)
+  const [isSavingProduct, setIsSavingProduct] = useState(false)
+  const [priceHistory, setPriceHistory] = useState<any[]>([])
+  const canManageCatalog = clientRole === 'admin'
 
   const filteredClients = useMemo(() => {
     const term = clientSearch.trim().toLocaleLowerCase('pt-BR')
@@ -212,6 +227,58 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
       product.ean.includes(term)
     )
   }, [products, searchTerm])
+
+  const openProductEditor = async (product: Product) => {
+    setEditingProduct(product)
+    setEditFinalPrice(product.finalPrice == null ? '' : String(product.finalPrice))
+    setEditValidFrom(product.validFrom ?? '')
+    setEditValidUntil(product.validUntil ?? '')
+    setEditPricingMode(product.pricingMode ?? 'manual')
+    setEditMessage('')
+    setEditError(false)
+    setPriceHistory([])
+    if (supabase && canManageCatalog) {
+      const { data } = await supabase.from('product_price_history').select('changed_at, change_source, old_values, new_values').eq('product_code', product.code).order('changed_at', { ascending: false }).limit(10)
+      setPriceHistory(data ?? [])
+    }
+  }
+
+  const saveProductPrice = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!editingProduct || !supabase || !canManageCatalog) return
+    setIsSavingProduct(true)
+    setEditMessage('')
+    setEditError(false)
+    try {
+      const parsed = editFinalPrice.trim() === '' ? null : Number(editFinalPrice.replace(',', '.'))
+      if (editPricingMode === 'manual' && (parsed === null || !Number.isFinite(parsed) || parsed < 0)) {
+        throw new Error('Informe um preço final válido e não negativo.')
+      }
+      if (editValidFrom && editValidUntil && editValidUntil < editValidFrom) {
+        throw new Error('A data final da vigência não pode ser anterior à data inicial.')
+      }
+      const { error } = await supabase.from('products').update({
+        final_price: editPricingMode === 'manual' ? parsed : editingProduct.finalPrice,
+        pricing_mode: editPricingMode,
+        valid_from: editValidFrom || null,
+        valid_until: editValidUntil || null,
+      }).eq('product_code', editingProduct.code)
+      if (error) throw error
+      const { data, error: reloadError } = await supabase.from('products').select('*').eq('active', true).order('description').limit(5000)
+      if (reloadError) throw reloadError
+      setProducts((data ?? []).map(toProduct))
+      const { data: history } = await supabase.from('product_price_history').select('changed_at, change_source, old_values, new_values').eq('product_code', editingProduct.code).order('changed_at', { ascending: false }).limit(10)
+      setPriceHistory(history ?? [])
+      setEditMessage(editPricingMode === 'automatic'
+        ? 'Modo automático selecionado. O preço atual foi preservado; a fórmula será ativada após validação da regra comercial.'
+        : 'Preço e vigência salvos com sucesso.')
+    } catch (error) {
+      setEditError(true)
+      setEditMessage(error instanceof Error ? error.message : 'Não foi possível salvar as alterações.')
+    } finally {
+      setIsSavingProduct(false)
+    }
+  }
 
   const handleImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -363,10 +430,10 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
             <section className="catalog">
               <div className="catalog-toolbar">
                 <div className="catalog-search"><Search size={18} /><input value={searchTerm} onChange={event => setSearchTerm(event.target.value)} placeholder="Pesquisar por descrição, código ou EAN..." /></div>
-                <button className="primary-button import-button" onClick={() => fileInput.current?.click()} disabled={isImporting}>
+                {canManageCatalog && <button className="primary-button import-button" onClick={() => fileInput.current?.click()} disabled={isImporting}>
                   <Upload size={16} /> {isImporting ? 'Importando...' : 'Importar Excel'}
-                </button>
-                <input ref={fileInput} className="hidden-file" type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} />
+                </button>}
+                {canManageCatalog && <input ref={fileInput} className="hidden-file" type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} />}
               </div>
 
               {importMessage && <div className={`import-message ${importError ? 'error' : 'success'}`}>{importError ? <AlertCircle size={17} /> : <CheckCircle2 size={17} />}{importMessage}</div>}
@@ -405,13 +472,31 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
                           <div><span>P&G+</span><strong>{percent(product.pgPlus)}</strong></div>
                           <div><span>DF</span><strong>{percent(product.df)}</strong></div>
                           <div><span>DG</span><strong>{percent(product.dg)}</strong></div>
-                          <div className="final-breakdown"><span>Preço final calculado</span><strong>{money(product.finalPrice)}</strong></div>
+                          <div className="final-breakdown"><span>Preço final</span><strong>{money(product.finalPrice)}</strong></div>
+                          <div><span>Modo de preço</span><strong>{product.pricingMode === 'automatic' ? 'Automático (regra pendente)' : 'Manual'}</strong></div>
+                          <div><span>Vigência inicial</span><strong>{product.validFrom || 'Não definida'}</strong></div>
+                          <div><span>Vigência final</span><strong>{product.validUntil || 'Sem data final'}</strong></div>
+                          {canManageCatalog && <button type="button" className="primary-button" style={{marginTop:16}} onClick={() => void openProductEditor(product)}>Editar preço e vigência</button>}
                         </div>
                       </details>
                     ))
                   }
                 </div>
               )}
+              {editingProduct && canManageCatalog && <div role="dialog" aria-modal="true" aria-label="Editar preço do produto" style={{position:'fixed',inset:0,zIndex:1000,background:'rgba(10,25,40,.58)',display:'grid',placeItems:'center',padding:20}}>
+                <form onSubmit={saveProductPrice} style={{background:'#fff',color:'#183247',borderRadius:18,padding:24,width:'min(560px,100%)',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 20px 60px rgba(0,0,0,.25)'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}><div><p className="eyebrow">GESTÃO DE CATÁLOGO</p><h2 style={{margin:'4px 0 8px'}}>Editar preço</h2></div><button type="button" className="signout-button" onClick={() => setEditingProduct(null)}>Fechar</button></div>
+                  <p style={{fontWeight:600}}>{editingProduct.description}</p><small>Código: {editingProduct.code}</small>
+                  <label style={{display:'block',marginTop:18,fontWeight:600}}>Modelo de preço</label>
+                  <select value={editPricingMode} onChange={e => setEditPricingMode(e.target.value as 'automatic'|'manual')} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}}><option value="manual">Manual</option><option value="automatic">Automático</option></select>
+                  {editPricingMode === 'manual' ? <><label style={{display:'block',marginTop:14,fontWeight:600}}>Preço final (R$)</label><input type="number" min="0" step="0.01" value={editFinalPrice} onChange={e => setEditFinalPrice(e.target.value)} required style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}} /></> : <p style={{background:'#fff7e6',padding:12,borderRadius:8,marginTop:12}}>O cálculo automático ainda não foi ativado. O preço atual será preservado até validarmos a fórmula comercial com sua planilha.</p>}
+                  <label style={{display:'block',marginTop:14,fontWeight:600}}>Início da vigência</label><input type="date" value={editValidFrom} onChange={e => setEditValidFrom(e.target.value)} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}} />
+                  <label style={{display:'block',marginTop:14,fontWeight:600}}>Fim da vigência</label><input type="date" value={editValidUntil} onChange={e => setEditValidUntil(e.target.value)} style={{width:'100%',padding:12,border:'1px solid #d5dde3',borderRadius:8,marginTop:6}} />
+                  {editMessage && <div className={'import-message '+(editError?'error':'success')} style={{marginTop:14}}>{editMessage}</div>}
+                  <button className="primary-button" type="submit" disabled={isSavingProduct} style={{width:'100%',marginTop:16}}>{isSavingProduct?'Salvando...':'Salvar alterações'}</button>
+                  <div style={{marginTop:20}}><h3>Histórico recente</h3>{priceHistory.length ? priceHistory.map((item,index)=><div key={index} style={{borderTop:'1px solid #e5eaee',padding:'9px 0',fontSize:13}}><strong>{new Date(item.changed_at).toLocaleString('pt-BR')}</strong><div>Origem: {item.change_source}</div></div>) : <small>O histórico aparecerá aqui após alterações registradas.</small>}</div>
+                </form>
+              </div>}
             </section>
           ) : (
             <section className="panel empty-state">
