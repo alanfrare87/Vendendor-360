@@ -179,7 +179,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
       const sheet = workbook.Sheets[workbook.SheetNames[0]]
       if (!sheet) throw new Error('A planilha não possui uma aba válida.')
       const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: '', raw: false })
-      const imported: Client[] = rows.slice(1).flatMap(row => {
+      const imported: Omit<Client, 'id'>[] = rows.slice(1).flatMap(row => {
         const v = row as unknown[]
         const code = cellCode(v[6])
         const cnpj = cellCode(v[5])
@@ -391,7 +391,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
       const sheet = workbook.Sheets[workbook.SheetNames[0]]
       if (!sheet) throw new Error('A planilha não possui uma aba válida.')
       const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: null, raw: true })
-      const imported: Product[] = rows.slice(1).flatMap(row => {
+      const imported: Omit<Product, 'id'>[] = rows.slice(1).flatMap(row => {
         const values = row as unknown[]
         const code = cellCode(values[1])
         const description = cellCode(values[2])
@@ -631,7 +631,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
             </section>
           ) : (
             <section className="panel empty-state">
-              <div className="empty-icon">{section === 'Pedidos' ? <ShoppingCart /> : section === 'Relatórios' ? <BarChart3 /> : <Settings />}</div>
+              <div className="empty-icon">{section === 'Relatórios' ? <BarChart3 /> : <Settings />}</div>
               <h2>Módulo {section}</h2>
               <p>Esta área já está reservada na estrutura do Vendedor 360°. Vamos implementar suas funções na próxima etapa.</p>
               <button className="primary-button" onClick={() => setSection('Visão geral')}>Voltar ao painel</button>
